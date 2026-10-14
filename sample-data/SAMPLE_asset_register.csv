@@ -1,0 +1,11 @@
+asset_tag,manufacturer,model,install_year,criticality,maximo_location
+SAT-1A,Example Transformer Co,EX-30M,1998,A,DEMO-SWGR-SAT1A
+52-1A01,Example Switchgear Co,EVB-1200,2011,A,DEMO-SWGR-1A-01
+BUS-1A,Example Switchgear Co,EMS-5,1998,A,DEMO-SWGR-1A
+EDG-1A,Example Engine Co,EDX-16,1987,A,DEMO-EDG-1A
+52-1A02,Example Switchgear Co,EVB-1200,2011,A,DEMO-SWGR-1A-02
+P-1A,Example Motor Co,EMV-1250,1987,A,DEMO-RHR-P1A
+P-1C,Example Motor Co,EMV-800,1987,A,DEMO-CS-P1C
+T-1A5,Example Transformer Co,EDT-1500,2004,B,DEMO-LC-1A5
+MCC-1A1,Example Controls Co,EMC-800,2004,B,DEMO-MCC-1A1
+MOV-E11-F004A,Example Valve Co,EGV-18,1987,A,DEMO-RHR-F004A
