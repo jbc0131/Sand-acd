@@ -17,7 +17,8 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     // Production server with its own data dir, so tests never touch ./data/cda.db or the dev cache.
-    command: `npm run build && npx next start --port ${PORT}`,
+    // In CI the workflow has already run `npm run build`, so only start the server.
+    command: process.env.CI ? `npx next start --port ${PORT}` : `npm run build && npx next start --port ${PORT}`,
     url: `http://localhost:${PORT}/api/sites`,
     timeout: 180_000,
     reuseExistingServer: false,
