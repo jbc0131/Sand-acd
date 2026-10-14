@@ -1,0 +1,192 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --page: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --muted-bg: #eef2f6;
+  --border: #dbe2ea;
+  --text: #14202e;
+  --muted: #5f6d7d;
+  --accent: #14a85a;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3f6ec;
+  --chip-bg: #e6eefb;
+  --chip-fg: #2a5bb8;
+  --amber-bg: #fdf1dc;
+  --amber-fg: #9a5b06;
+  --amber: #d98a0b;
+  --danger: #c93b3b;
+  --danger-bg: #fdecec;
+  --dark-surface: #14202e;
+  --dark-surface-fg: #e9eef4;
+  --canvas-dot: #c7d0db;
+  --shadow: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
+  --shadow-lg: 0 10px 30px rgb(16 24 40 / 0.12), 0 2px 6px rgb(16 24 40 / 0.06);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0b1018;
+    --panel: #101823;
+    --card: #152030;
+    --muted-bg: #1a2636;
+    --border: #243246;
+    --text: #e6edf5;
+    --muted: #93a1b3;
+    --accent: #22c06a;
+    --accent-fg: #06130b;
+    --accent-soft: #11301f;
+    --chip-bg: #1b2c48;
+    --chip-fg: #8fb3f5;
+    --amber-bg: #3a2a10;
+    --amber-fg: #f3c06b;
+    --amber: #f0a020;
+    --danger: #f07373;
+    --danger-bg: #3a1717;
+    --dark-surface: #05090f;
+    --dark-surface-fg: #e9eef4;
+    --canvas-dot: #2a3a50;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.5);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --page: #0b1018;
+  --panel: #101823;
+  --card: #152030;
+  --muted-bg: #1a2636;
+  --border: #243246;
+  --text: #e6edf5;
+  --muted: #93a1b3;
+  --accent: #22c06a;
+  --accent-fg: #06130b;
+  --accent-soft: #11301f;
+  --chip-bg: #1b2c48;
+  --chip-fg: #8fb3f5;
+  --amber-bg: #3a2a10;
+  --amber-fg: #f3c06b;
+  --amber: #f0a020;
+  --danger: #f07373;
+  --danger-bg: #3a1717;
+  --dark-surface: #05090f;
+  --dark-surface-fg: #e9eef4;
+  --canvas-dot: #2a3a50;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-muted-bg: var(--muted-bg);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-chip-bg: var(--chip-bg);
+  --color-chip-fg: var(--chip-fg);
+  --color-amber-bg: var(--amber-bg);
+  --color-amber-fg: var(--amber-fg);
+  --color-amber: var(--amber);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-dark-surface: var(--dark-surface);
+  --color-dark-surface-fg: var(--dark-surface-fg);
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --shadow-card: var(--shadow);
+  --shadow-float: var(--shadow-lg);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- React Flow ---------- */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--accent);
+  --xy-controls-button-background-color: var(--panel);
+  --xy-controls-button-background-color-hover: var(--muted-bg);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-border-color: var(--border);
+  --xy-edge-label-background-color: #ffffff;
+  --xy-edge-label-color: #14202e;
+}
+.react-flow__controls {
+  box-shadow: var(--shadow);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.react-flow__edge-textbg {
+  fill: #ffffff;
+}
+.react-flow__edge-text {
+  font-size: 11px;
+  fill: #14202e;
+}
+.react-flow__attribution {
+  background: transparent;
+}
+.react-flow__handle.cda-handle {
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+  border: 2px solid var(--card);
+}
+
+@keyframes cda-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.35);
+  }
+}
+.cda-pulse {
+  animation: cda-pulse 1s ease-in-out infinite;
+}
+
+@keyframes cda-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgb(217 138 11 / 0.35), 0 0 18px rgb(217 138 11 / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgb(217 138 11 / 0.25), 0 0 26px rgb(217 138 11 / 0.6);
+  }
+}
+.cda-highlight {
+  border-color: var(--amber) !important;
+  animation: cda-glow 1.6s ease-in-out infinite;
+}
+
+.cda-dimmed {
+  opacity: 0.25;
+}
