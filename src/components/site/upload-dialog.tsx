@@ -6,10 +6,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api, pollJob } from "@/lib/client";
-import { SOURCE_ACCEPT, type JobDTO, type SourceKind } from "@/lib/types";
+import { SOURCE_ACCEPT, type JobDTO, type UploadKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const TITLES: Record<SourceKind, { title: string; desc: string }> = {
+const TITLES: Record<UploadKind, { title: string; desc: string }> = {
   pfd: { title: "Upload Process Flow Diagram", desc: "A process flow diagram, P&ID or electrical one-line. CDA reads it and builds the site model." },
   om: { title: "Upload O & M Manual", desc: "Text is extracted per page and indexed for Copilot. Run Enrichment to apply it to assets." },
   assetdb: { title: "Upload Asset Database", desc: "CSV export with a tag column (tag, asset_tag, asset_id, equipment or location)." },
@@ -23,7 +23,7 @@ export function UploadDialog({
   onOpenChange,
   onDone,
 }: {
-  kind: SourceKind | null;
+  kind: UploadKind | null;
   siteId: number;
   maxUploadMb: number;
   onOpenChange: (open: boolean) => void;

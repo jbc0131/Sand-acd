@@ -2,9 +2,8 @@ import "server-only";
 import { z } from "zod";
 import { callJson, hasApiKey, MODEL_MAIN, NO_KEY_MESSAGE, UserFacingError, toUserMessage } from "./ai";
 import { raw } from "./db";
-import { readManualPages } from "./ingest";
 import { recomputeAssets, setParam, touchSite, DESCRIPTION_KEY } from "./model";
-import { normalizeTag, type SourceKind } from "./types";
+import { LINK_TYPES, normalizeTag, type LinkType, type SourceKind } from "./types";
 import type { JobContext } from "./jobs";
 
 const EXCERPT_CHARS = 60_000;
@@ -18,6 +17,18 @@ const ManualResult = z.object({
         tag: z.string().optional(),
         params: z.record(z.string(), scalar.nullable()).nullish(),
         description: z.string().nullish(),
+        sections: z
+          .array(
+            z.object({
+              section_no: z.coerce.number().int().positive(),
+              link_type: z
+                .string()
+                .nullish()
+                .transform((t): LinkType => (LINK_TYPES as string[]).includes(t ?? "") ? (t as LinkType) : "other"),
+            }),
+          )
+          .nullish()
+          .catch(null),
       }),
     )
     .default([]),
@@ -68,6 +79,7 @@ export async function runEnrichment(siteId: number, ctx: JobContext): Promise<st
   const byTag = new Map(assets.filter((a) => normalizeTag(a.tag)).map((a) => [normalizeTag(a.tag), a]));
   const markStatus = db.prepare(`UPDATE sources SET status = ?, summary = COALESCE(?, summary) WHERE id = ?`);
   let paramCount = 0;
+  let links = 0;
   const touched = new Set<number>();
   let applied = 0;
   const warnings: string[] = [];
@@ -120,6 +132,15 @@ export async function runEnrichment(siteId: number, ctx: JobContext): Promise<st
       }
     }
     const idSet = new Map(assets.map((a) => [String(a.id), a]));
+    const chunkBySection = new Map(
+      (db.prepare(`SELECT id, section_no FROM kb_chunks WHERE source_id = ?`).all(src.id) as { id: number; section_no: number }[]).map((c) => [
+        c.section_no,
+        c.id,
+      ]),
+    );
+    const linkStmt = db.prepare(
+      `INSERT OR IGNORE INTO asset_doc_links (asset_id, chunk_id, link_type, created_by, status) VALUES (?, ?, ?, 'model', 'unreviewed')`,
+    );
     db.transaction(() => {
       for (const entry of result.assets) {
         const a = (entry.id && idSet.get(entry.id)) || (entry.tag ? byTag.get(normalizeTag(entry.tag)) : undefined);
@@ -133,6 +154,10 @@ export async function runEnrichment(siteId: number, ctx: JobContext): Promise<st
           touched.add(a.id);
         }
         if (entry.description && entry.description.trim()) setParam(a.id, DESCRIPTION_KEY, entry.description.trim(), src.id, runId);
+        for (const sec of entry.sections ?? []) {
+          const chunk = chunkBySection.get(sec.section_no);
+          if (chunk) links += linkStmt.run(a.id, chunk, sec.link_type).changes;
+        }
       }
     })();
     markStatus.run("applied", null, src.id);
@@ -143,16 +168,21 @@ export async function runEnrichment(siteId: number, ctx: JobContext): Promise<st
   recomputeAssets(siteId);
   touchSite(siteId);
   if (applied === 0) throw new UserFacingError(warnings.at(-1) ?? "No sources could be applied.");
-  return `Enrichment complete: ${paramCount} parameters on ${touched.size} assets from ${applied} source${applied === 1 ? "" : "s"}.`;
+  const linkNote = links ? `, ${links} document links` : "";
+  return `Enrichment complete: ${paramCount} parameters on ${touched.size} assets from ${applied} source${applied === 1 ? "" : "s"}${linkNote}.`;
 }
 
 async function enrichFromManual(src: SourceRow, assets: AssetRow[], ctx: JobContext): Promise<ManualResult> {
-  const pages = await readManualPages(src.file_path);
-  // Group pages into excerpts that fit comfortably in context.
+  // The manual was chunked and indexed at upload; send those sections so the model can cite them by number.
+  const chunks = raw()
+    .prepare(`SELECT section_no, page, text FROM kb_chunks WHERE source_id = ? ORDER BY section_no`)
+    .all(src.id) as { section_no: number; page: number; text: string }[];
+  if (chunks.length === 0) throw new UserFacingError("This manual has no indexed text.");
+  // Group sections into excerpts that fit comfortably in context.
   const excerpts: string[] = [];
   let cur = "";
-  pages.forEach((p, i) => {
-    const block = `[Page ${i + 1}]\n${p}\n\n`;
+  chunks.forEach((c) => {
+    const block = `[Section ${c.section_no} | page ${c.page}]\n${c.text}\n\n`;
     if (cur && cur.length + block.length > EXCERPT_CHARS) {
       excerpts.push(cur);
       cur = "";
@@ -162,18 +192,26 @@ async function enrichFromManual(src: SourceRow, assets: AssetRow[], ctx: JobCont
   if (cur.trim()) excerpts.push(cur);
 
   const assetJson = JSON.stringify(assets.map((a) => ({ id: String(a.id), tag: a.tag, name: a.name, type: a.type })));
-  const merged = new Map<string, { params: Record<string, string>; description: string }>();
+  const merged = new Map<string, { params: Record<string, string>; description: string; sections: Map<number, LinkType> }>();
   for (let i = 0; i < excerpts.length; i++) {
     ctx.step(`Reading ${src.file_name} (part ${i + 1} of ${excerpts.length})`);
-    const prompt = `You are enriching a site model from an O&M manual. Assets: ${assetJson}. From the manual excerpt below, extract operating and design parameters for these assets. Match by tag first, then by clear name. Return ONLY JSON: {"assets":[{"id":"...","params":{"snake_case_key":"value with units"},"description":"better one-sentence description if the manual gives one, else empty"}]}. Include only values stated in the excerpt.\n\n<manual_excerpt>\n${excerpts[i]}\n</manual_excerpt>`;
+    const prompt = `You are enriching a site model from an O&M manual. Assets: ${assetJson}. From the manual excerpt below, extract operating and design parameters for these assets. Match by tag first, then by clear name. Return ONLY JSON: {"assets":[{"id":"...","params":{"snake_case_key":"value with units"},"description":"better one-sentence description if the manual gives one, else empty","sections":[{"section_no":12,"link_type":"operating"}]}]}. Include only values stated in the excerpt. In "sections", list the section numbers (from the [Section N] markers) that describe each asset, with link_type one of operating, maintenance, design_data or other. Only list sections that actually discuss the asset.\n\n<manual_excerpt>\n${excerpts[i]}\n</manual_excerpt>`;
     const r = await callJson({ model: MODEL_MAIN, content: [{ type: "text", text: prompt }], schema: ManualResult });
     for (const a of r.assets) {
       if (!a.id) continue;
-      const m = merged.get(a.id) ?? { params: {}, description: "" };
+      const m = merged.get(a.id) ?? { params: {}, description: "", sections: new Map<number, LinkType>() };
+      for (const sec of a.sections ?? []) if (!m.sections.has(sec.section_no)) m.sections.set(sec.section_no, sec.link_type);
       for (const [k, v] of Object.entries(a.params ?? {})) if (v != null && String(v).trim()) m.params[k] = String(v);
       if (a.description && a.description.trim() && !m.description) m.description = a.description.trim();
       merged.set(a.id, m);
     }
   }
-  return { assets: [...merged.entries()].map(([id, v]) => ({ id, params: v.params, description: v.description })) };
+  return {
+    assets: [...merged.entries()].map(([id, v]) => ({
+      id,
+      params: v.params,
+      description: v.description,
+      sections: [...v.sections.entries()].map(([section_no, link_type]) => ({ section_no, link_type })),
+    })),
+  };
 }

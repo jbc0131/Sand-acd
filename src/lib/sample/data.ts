@@ -51,7 +51,7 @@ const HEADER = `${MANUAL_TITLE}\nFICTIONAL - FOR SOFTWARE DEMONSTRATION ONLY.`;
 export const MANUAL_PAGES: string[] = [
   `${HEADER}
 Page 1. Introduction and Scope.
-This fictional manual describes the 4.16 kV safety bus BUS-1A at an invented demonstration site. It exists only to exercise the Capital Delivery Accelerator software. None of the values, procedures or equipment descriptions apply to any real facility.
+This fictional manual describes the 4.16 kV safety bus BUS-1A at an invented demonstration site. It exists only to exercise the SiteAId software. None of the values, procedures or equipment descriptions apply to any real facility.
 BUS-1A is normally fed from the 230 kV switchyard SWYD-230 through station auxiliary transformer SAT-1A and normal supply breaker 52-1A01. Emergency diesel generator EDG-1A provides a standby source through output breaker 52-1A02.
 Loads on BUS-1A covered here are RHR pump P-1A through feeder 52-1A03, core spray pump P-1C through feeder 52-1A04, and load center transformer T-1A5 through feeder 52-1A05. T-1A5 feeds motor control center MCC-1A1, which supplies RHR suction valve MOV-E11-F004A and room cooler fan FN-1A.`,
 
@@ -194,3 +194,25 @@ BUS-1A,bus_voltage,2026-10-01T05:00:00Z,4.16,kV
 BUS-1A,bus_voltage,2026-10-01T06:00:00Z,4.17,kV
 SAT-1A,top_oil_temp,2026-10-01T06:00:00Z,54,degC
 `;
+
+/** Breakers on BUS-1A plus the bus itself: always fully reviewed, whatever the review mode. */
+export const SAFETY_RELATED_TAGS = ["BUS-1A", "52-1A01", "52-1A02", "52-1A03", "52-1A04", "52-1A05"];
+
+/**
+ * Component-to-section links seeded from the sample manual, as the model would return them.
+ * Two are deliberately wrong (marked below) so the SME link test has something to catch.
+ */
+export const SAMPLE_DOC_LINKS: { page: number; linkType: "operating" | "maintenance" | "design_data" | "other"; tags: string[] }[] = [
+  { page: 2, linkType: "design_data", tags: ["SAT-1A", "52-1A01", "52-1A02", "52-1A03", "52-1A04", "52-1A05", "T-1A5", "MCC-1A1"] },
+  { page: 3, linkType: "design_data", tags: ["EDG-1A", "P-1A", "P-1C", "MOV-E11-F004A", "FN-1A"] },
+  { page: 4, linkType: "operating", tags: ["BUS-1A", "52-1A01", "52-1A02", "EDG-1A", "52-1A03", "52-1A04", "52-1A05", "MOV-E11-F004A", "FN-1A"] },
+  { page: 5, linkType: "operating", tags: ["BUS-1A", "52-1A01", "EDG-1A", "52-1A02", "52-1A05", "52-1A03", "52-1A04"] },
+  { page: 6, linkType: "operating", tags: ["SAT-1A", "52-1A01", "EDG-1A", "52-1A02"] },
+  // SWYD-230 is wrong here: the EDG surveillance doesn't cover the switchyard.
+  { page: 7, linkType: "maintenance", tags: ["EDG-1A", "52-1A02", "SWYD-230"] },
+  { page: 8, linkType: "maintenance", tags: ["52-1A01", "52-1A02", "52-1A03", "52-1A04", "52-1A05"] },
+  { page: 9, linkType: "operating", tags: ["P-1A", "MOV-E11-F004A", "FN-1A", "52-1A03"] },
+  // T-1A5 is wrong here: the MOV stroke test doesn't involve the load center transformer.
+  { page: 10, linkType: "maintenance", tags: ["MOV-E11-F004A", "P-1A", "52-1A03", "MCC-1A1", "T-1A5"] },
+  { page: 11, linkType: "maintenance", tags: ["SAT-1A", "P-1A", "P-1C", "MCC-1A1", "FN-1A", "EDG-1A"] },
+];

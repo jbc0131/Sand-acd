@@ -190,3 +190,12 @@ body {
 .cda-dimmed {
   opacity: 0.25;
 }
+
+.cda-traced {
+  border-color: #2a5bb8 !important;
+  box-shadow: 0 0 0 3px rgb(42 91 184 / 0.3);
+}
+.cda-deenergized {
+  border-color: var(--danger) !important;
+  background: var(--danger-bg) !important;
+}

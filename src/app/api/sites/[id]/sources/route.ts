@@ -1,12 +1,16 @@
 import fs from "node:fs";
-import { raw } from "@/lib/db";
+import path from "node:path";
+import { raw, UPLOAD_DIR } from "@/lib/db";
 import { callText, hasApiKey, NO_KEY_MESSAGE, toUserMessage, UserFacingError } from "@/lib/ai";
-import { extractDiagram, saveDiagram } from "@/lib/extract";
+import { extractDiagram, saveDrawing } from "@/lib/extract";
+import { insertDrawing, setDrawingImage, setDrawingStatus } from "@/lib/drawings";
+import { renderFirstPagePng } from "@/lib/render";
+import type { JobContext } from "@/lib/jobs";
 import { chunkPages, indexChunks, insertSource, readManualPages, saveUpload, stageAssetDb, stageTelemetry } from "@/lib/ingest";
-import { runningJobFor, startJob } from "@/lib/jobs";
+import { startJob } from "@/lib/jobs";
 import { getSiteSummary, listSources, removeUpload } from "@/lib/model";
 import { fail, handle, ok, parseId } from "@/lib/http";
-import { SOURCE_KINDS, type SourceKind } from "@/lib/types";
+import { SOURCE_KINDS, type UploadKind } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +29,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/sites/[id]/sour
   } catch {
     return fail("Upload failed. The request was not a valid file upload.");
   }
-  const kind = String(form.get("kind") ?? "") as SourceKind;
+  const kind = String(form.get("kind") ?? "") as UploadKind;
   const file = form.get("file");
   if (!SOURCE_KINDS.includes(kind)) return fail("Unknown source type.");
   if (!(file instanceof File)) return fail("Choose a file to upload.");
@@ -45,32 +49,45 @@ export async function POST(req: Request, ctx: RouteContext<"/api/sites/[id]/sour
       removeUpload(saved.filePath);
       return fail(NO_KEY_MESSAGE);
     }
-    if (runningJobFor(siteId, "diagram")) {
-      removeUpload(saved.filePath);
-      return fail("A diagram is already being processed for this site.");
-    }
     const sourceId = insertSource(siteId, "pfd", saved.fileName, saved.filePath, "ingested", "Processing…");
+    const drawingId = insertDrawing(siteId, sourceId, saved.fileName, "queued");
     const job = startJob(
       siteId,
       "diagram",
       "Reading diagram",
       async (jc) => {
-        const d = await extractDiagram(saved.filePath, jc);
+        const started = Date.now();
+        setDrawingStatus(drawingId, "processing");
+        jc.step("Rendering page image");
+        await storePageImage(siteId, drawingId, saved.filePath, jc);
+        const usage = { input: 0, output: 0 };
+        const d = await extractDiagram(saved.filePath, jc, usage);
         jc.step("Building site model");
-        const r = saveDiagram(siteId, sourceId, d);
+        const r = saveDrawing(siteId, drawingId, sourceId, d, {
+          ingestMs: Date.now() - started,
+          tokensIn: usage.input,
+          tokensOut: usage.output,
+        });
+        const num = d.title_block.drawing_number || saved.fileName;
         raw()
-          .prepare(`UPDATE sources SET status = 'applied', summary = ? WHERE id = ?`)
-          .run(`${r.assets} assets and ${r.edges} connections extracted from ${saved.fileName}.`, sourceId);
-        return `Site model built: ${r.assets} assets, ${r.edges} connections.`;
+          .prepare(`UPDATE sources SET summary = ? WHERE id = ?`)
+          .run(
+            `${num}${d.title_block.revision ? ` rev ${d.title_block.revision}` : ""}: ${r.assets} components and ${r.edges} connections${
+              d.status === "partial" ? `; partial read (${d.partial_reason || "part of the sheet unreadable"})` : ""
+            }${r.replaced ? `; replaced ${r.replaced} earlier revision` : ""}.`,
+            sourceId,
+          );
+        return `${num}: ${r.assets} components, ${r.edges} connections${d.status === "partial" ? " (partial read)" : ""}.`;
       },
       (err) => {
-        // Failed diagrams leave nothing behind, so the user can simply retry.
-        raw().prepare(`DELETE FROM sources WHERE id = ?`).run(sourceId);
-        removeUpload(saved.filePath);
-        return toUserMessage(err);
+        // The drawing stays in the register as failed, with the reason, so the read can be retried.
+        const reason = toUserMessage(err);
+        setDrawingStatus(drawingId, "failed", reason);
+        raw().prepare(`UPDATE sources SET status = 'failed', summary = ? WHERE id = ?`).run(`Failed: ${reason}`, sourceId);
+        return reason;
       },
     );
-    return ok({ job }, 202);
+    return ok({ job, drawingId }, 202);
   }
 
   try {
@@ -125,5 +142,22 @@ async function summarize(sourceId: number, pages: string[], fallback: string) {
     if (s) raw().prepare(`UPDATE sources SET summary = ? WHERE id = ?`).run(`${fallback.split(".")[0]}. ${s}`, sourceId);
   } catch {
     // keep heuristic summary
+  }
+}
+
+/** Stores a PNG of page 1 for the drawing viewer. Images are used as-is. A render failure is not fatal. */
+async function storePageImage(siteId: number, drawingId: number, filePath: string, jc: JobContext) {
+  if (!filePath.toLowerCase().endsWith(".pdf")) {
+    setDrawingImage(drawingId, filePath);
+    return;
+  }
+  try {
+    const png = await renderFirstPagePng(new Uint8Array(fs.readFileSync(filePath)));
+    const out = path.join(UPLOAD_DIR, String(siteId), `drawing-${drawingId}.png`);
+    fs.writeFileSync(out, png);
+    setDrawingImage(drawingId, out);
+  } catch (err) {
+    console.error("[render]", err);
+    jc.warn("The page image could not be rendered, so the drawing viewer will show no image for this sheet.");
   }
 }

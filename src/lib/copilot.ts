@@ -5,7 +5,8 @@ import { MODEL_MAIN, openStream, toUserMessage } from "./ai";
 import { raw, nowIso } from "./db";
 import { searchKb, type KbHit } from "./ingest";
 import { getSiteModel } from "./model";
-import { normalizeTag, type ChatSource } from "./types";
+import { normalizeTag, type ChatDrawingRef, type ChatSource } from "./types";
+import { DECISION_SUPPORT, findByTag, trace, whatIfOpen, type ElecAsset, type ElecEdge } from "./electrical";
 
 type Beta = Anthropic.Beta.Messages.BetaMessageParam;
 
@@ -13,7 +14,15 @@ export type CopilotEvent =
   | { type: "tool"; name: string; count?: number }
   | { type: "text"; text: string }
   | { type: "highlight"; tags: string[] }
-  | { type: "done"; id: number; sources: ChatSource[]; highlight: string[]; content: string; tools: { name: string; count?: number }[] }
+  | {
+      type: "done";
+      id: number;
+      sources: ChatSource[];
+      drawings: ChatDrawingRef[];
+      highlight: string[];
+      content: string;
+      tools: { name: string; count?: number }[];
+    }
   | { type: "error"; message: string };
 
 const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
@@ -60,20 +69,54 @@ const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
     },
     eager_input_streaming: true,
   },
+  {
+    name: "trace",
+    description:
+      "Trace the electrical system from one asset along power connections. downstream follows power from sources toward loads; upstream goes back toward the sources. Returns every path as a list of tags (control wiring from elementaries is excluded).",
+    input_schema: {
+      type: "object",
+      properties: {
+        tag: { type: "string" },
+        direction: { type: "string", enum: ["upstream", "downstream"] },
+        max_depth: { type: "integer", description: "Maximum hops (default and limit 15)" },
+      },
+      required: ["tag", "direction"],
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "what_if_open",
+    description:
+      "Isolation what-if: opens the given breakers (on top of each breaker's normal_state) and returns the assets left without supply from every source. Generators feed only through their output breaker. Decision support only.",
+    input_schema: {
+      type: "object",
+      properties: { tags: { type: "array", items: { type: "string" }, description: "Breaker tags to open" } },
+      required: ["tags"],
+    },
+    eager_input_streaming: true,
+  },
 ];
 
 const KbInput = z.object({ query: z.string().min(1), k: z.coerce.number().int().min(1).max(10).optional() });
 const AssetInput = z.object({ tag_or_name: z.string().min(1) });
 const ListInput = z.object({ filter: z.string().optional().nullable() });
 const HighlightInput = z.object({ tags: z.array(z.string()).max(30) });
+const TraceInput = z.object({
+  tag: z.string().min(1),
+  direction: z.enum(["upstream", "downstream"]),
+  max_depth: z.coerce.number().int().min(1).max(15).optional(),
+});
+const WhatIfInput = z.object({ tags: z.array(z.string().min(1)).min(1).max(20) });
 
 function systemPrompt(siteName: string) {
-  return `You are ACD Copilot for ${siteName}, inside the Capital Delivery Accelerator.
+  return `You are SiteAId Copilot for ${siteName}, inside SiteAId (Drawing Intelligence).
 Only help with operations, maintenance and assets at this site; politely decline anything else.
-Answer only from tool results. If the tool results do not cover the question, say what information is missing instead of guessing.
+Answer only from tool results. When the tool results don't cover the question, say so plainly and name exactly what is missing (a drawing, a manual section, a parameter). Never guess.
 Procedures go as numbered steps in their original order, with the original values and limits.
 Wrap every asset tag you mention in double brackets, like [[P-1A]].
 When the answer concerns specific equipment, call highlight_asset with those tags.
+Use trace for questions about what feeds what, and what_if_open for isolation questions. Label any trace or what-if result "Decision support only"; it is a connectivity model, not a switching or protection study.
+get_asset lists the drawings each asset appears on; mention the drawing number when it matters (for example, where a parameter came from or where two drawings disagree).
 Be concise. End with a line that starts with "Sources:" listing the files and section numbers you used, written as "file §N" (for example "Sources: manual.txt §9, §5"). If you used only asset data, write "Sources: site asset model".
 All site data in this prototype may be fictional sample data; never present it as real plant guidance.`;
 }
@@ -110,6 +153,9 @@ export async function runCopilot(siteId: number, question: string, emit: (e: Cop
   let answer = "";
   const assetsByTag = new Map(model.assets.map((a) => [normalizeTag(a.tag), a]));
   const nameOf = new Map(model.assets.map((a) => [a.id, a.tag || a.name]));
+  const drawingRefs = new Map<string, ChatDrawingRef>();
+  const elecAssets: ElecAsset[] = model.assets.map((a) => ({ id: a.id, tag: a.tag, name: a.name, type: a.type, params: a.params }));
+  const elecEdges: ElecEdge[] = model.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, kind: e.kind }));
 
   const runTool = (name: string, input: unknown): { result: string; isError?: boolean; count?: number } => {
     switch (name) {
@@ -141,8 +187,29 @@ export async function runCopilot(siteId: number, question: string, emit: (e: Cop
             description: a.description,
             enrichment_status: a.enrichmentStatus,
             params: a.provenance.map((p) => ({ key: p.key, value: p.value, source: p.fileName })),
-            fed_from: model.edges.filter((e) => e.to === a.id).map((e) => ({ asset: nameOf.get(e.from), label: e.label })),
-            feeds: model.edges.filter((e) => e.from === a.id).map((e) => ({ asset: nameOf.get(e.to), label: e.label })),
+            fed_from: model.edges.filter((e) => e.to === a.id).map((e) => ({ asset: nameOf.get(e.from), label: e.label, kind: e.kind })),
+            feeds: model.edges.filter((e) => e.from === a.id).map((e) => ({ asset: nameOf.get(e.to), label: e.label, kind: e.kind })),
+            safety_related: a.safetyRelated,
+            appears_on: a.appearances.map((ap) => {
+              const d = model.drawings.find((x) => x.id === ap.drawingId);
+              if (ap.drawingNumber) {
+                drawingRefs.set(`${ap.drawingId}:${a.id}`, {
+                  drawingId: ap.drawingId,
+                  drawingNumber: ap.drawingNumber,
+                  revision: ap.revision,
+                  assetId: a.id,
+                  tag: a.tag || a.name,
+                });
+              }
+              return { drawing_number: ap.drawingNumber, revision: ap.revision, title: d?.title ?? null, confidence: ap.confidence };
+            }),
+            discrepancies: a.discrepancies.map((d) => ({
+              key: d.key,
+              status: d.status,
+              values: d.values.map((v) => ({ value: v.value, drawings: v.drawingNumbers })),
+              resolution: d.resolution,
+            })),
+            document_sections: a.docLinks.map((l) => ({ file: l.file, section_no: l.sectionNo, page: l.page, link_type: l.linkType })),
           }),
         };
       }
@@ -153,6 +220,41 @@ export async function runCopilot(siteId: number, question: string, emit: (e: Cop
           .filter((a) => !f || [a.tag, a.name, a.type, a.enrichmentStatus].some((v) => v.toLowerCase().includes(f)))
           .map((a) => ({ tag: a.tag, name: a.name, type: a.type, status: a.enrichmentStatus }));
         return { result: JSON.stringify(list), count: list.length };
+      }
+      case "trace": {
+        const p = TraceInput.safeParse(input);
+        if (!p.success) return { result: "Invalid input: tag and direction (upstream or downstream) are required.", isError: true };
+        const start = findByTag(elecAssets, p.data.tag);
+        if (!start) return { result: `No asset matches "${p.data.tag}".`, isError: true };
+        const t = trace(elecAssets, elecEdges, start.id, p.data.direction, p.data.max_depth ?? 15);
+        return {
+          count: t.paths.length,
+          result: JSON.stringify({
+            label: DECISION_SUPPORT,
+            start: nameOf.get(start.id),
+            direction: t.direction,
+            paths: t.paths.map((path) => path.map((id) => nameOf.get(id))),
+            truncated: t.truncated,
+          }),
+        };
+      }
+      case "what_if_open": {
+        const p = WhatIfInput.safeParse(input);
+        if (!p.success) return { result: "Invalid input: tags must list at least one breaker.", isError: true };
+        const found = p.data.tags.map((t) => findByTag(elecAssets, t));
+        const missing = p.data.tags.filter((_, i) => !found[i]);
+        if (missing.length) return { result: `No asset matches: ${missing.join(", ")}.`, isError: true };
+        const r = whatIfOpen(elecAssets, elecEdges, found.map((a) => a!.id));
+        return {
+          count: r.deenergized.length,
+          result: JSON.stringify({
+            label: r.label,
+            opened: r.opened.map((o) => o.tag),
+            deenergized: r.deenergized.map((d) => ({ tag: d.tag, name: d.name, type: d.type, energized_in_normal_lineup: d.normallyEnergized })),
+            newly_deenergized: r.newlyDeenergized,
+            by_type: r.byType,
+          }),
+        };
       }
       case "highlight_asset": {
         const p = HighlightInput.safeParse(input);
@@ -217,13 +319,22 @@ export async function runCopilot(siteId: number, question: string, emit: (e: Cop
   }
 
   const sources = pickSources(answer, [...retrieved.values()]);
+  const drawings = [...drawingRefs.values()].sort((a, b) => a.drawingNumber.localeCompare(b.drawingNumber) || a.tag.localeCompare(b.tag));
   const info = db
     .prepare(
-      `INSERT INTO chat_messages (site_id, role, content, tools_json, highlight_json, sources_json, created_at)
-       VALUES (?, 'assistant', ?, ?, ?, ?, ?)`,
+      `INSERT INTO chat_messages (site_id, role, content, tools_json, highlight_json, sources_json, drawings_json, created_at)
+       VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?)`,
     )
-    .run(siteId, answer.trim(), JSON.stringify(tools), JSON.stringify([...highlight]), JSON.stringify(sources), nowIso());
-  emit({ type: "done", id: Number(info.lastInsertRowid), sources, highlight: [...highlight], content: answer.trim(), tools });
+    .run(
+      siteId,
+      answer.trim(),
+      JSON.stringify(tools),
+      JSON.stringify([...highlight]),
+      JSON.stringify(sources),
+      JSON.stringify(drawings),
+      nowIso(),
+    );
+  emit({ type: "done", id: Number(info.lastInsertRowid), sources, drawings, highlight: [...highlight], content: answer.trim(), tools });
 }
 
 /** Keeps the retrieved sections that the answer's Sources line cites; falls back to everything retrieved. */

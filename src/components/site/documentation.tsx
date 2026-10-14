@@ -66,6 +66,7 @@ export function Documentation({
                       onClick={() => onSelect(a.id)}
                       className={cn("cursor-pointer hover:bg-muted-bg", dim && "opacity-30")}
                       data-testid="asset-row"
+                      data-tag={a.tag}
                     >
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">

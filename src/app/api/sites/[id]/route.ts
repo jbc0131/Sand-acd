@@ -19,18 +19,20 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/sites/[id]">) {
 const Patch = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   location: z.string().trim().max(120).nullable().optional(),
+  reviewMode: z.enum(["full", "exception"]).optional(),
 });
 
 export async function PATCH(req: Request, ctx: RouteContext<"/api/sites/[id]">) {
   const id = parseId((await ctx.params).id);
   if (!id) return fail("Site not found.", 404);
   const parsed = Patch.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail("Name cannot be empty.");
+  if (!parsed.success) return fail("Invalid site settings.");
   try {
     const db = raw();
     if (parsed.data.name !== undefined) db.prepare(`UPDATE sites SET name = ? WHERE id = ?`).run(parsed.data.name, id);
     if (parsed.data.location !== undefined)
       db.prepare(`UPDATE sites SET location = ? WHERE id = ?`).run(parsed.data.location || null, id);
+    if (parsed.data.reviewMode) db.prepare(`UPDATE sites SET review_mode = ? WHERE id = ?`).run(parsed.data.reviewMode, id);
     db.prepare(`UPDATE sites SET updated_at = ? WHERE id = ?`).run(nowIso(), id);
     return ok({ ok: true });
   } catch (err) {

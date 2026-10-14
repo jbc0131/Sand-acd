@@ -12,14 +12,14 @@ import {
   AlertDialogDescription,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { SiteModel, SourceDTO, SourceKind } from "@/lib/types";
+import type { SiteModel, SourceDTO, UploadKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const CARDS: { kind: SourceKind; title: string; desc: string; icon: LucideIcon }[] = [
+const CARDS: { kind: UploadKind; title: string; desc: string; icon: LucideIcon; laterPhase?: boolean }[] = [
   { kind: "assetdb", title: "Asset Database", desc: "Connect a database to enrich insights", icon: Database },
   { kind: "om", title: "O & M Manuals", desc: "Upload operational and maintenance manuals", icon: BookOpen },
   { kind: "pfd", title: "Process Flow Diagrams", desc: "Upload PFDs to support site planning", icon: Workflow },
-  { kind: "telemetry", title: "Telemetry", desc: "Upload historical telemetry data", icon: Activity },
+  { kind: "telemetry", title: "Telemetry (Phase 3+)", desc: "Upload historical telemetry data", icon: Activity, laterPhase: true },
 ];
 
 export function EnrichPanel({
@@ -34,13 +34,15 @@ export function EnrichPanel({
   model: SiteModel;
   enriching: boolean;
   enrichStep: string;
-  onUpload: (kind: SourceKind) => void;
-  onUnlink: (kind: SourceKind) => Promise<void>;
+  onUpload: (kind: UploadKind) => void;
+  onUnlink: (kind: UploadKind) => Promise<void>;
   onRun: () => void;
   onContinue: () => void;
 }) {
-  const [details, setDetails] = React.useState<SourceKind | null>(null);
-  const [confirm, setConfirm] = React.useState<SourceKind | null>(null);
+  const [details, setDetails] = React.useState<UploadKind | null>(null);
+  const [confirm, setConfirm] = React.useState<UploadKind | null>(null);
+  // Phase 1 uses no operating data, so later-phase sources are hidden unless asked for.
+  const [showLater, setShowLater] = React.useState(false);
   const hasModel = model.assets.length > 0;
   const pendingCount = model.sources.filter((s) => s.kind !== "pfd" && s.status === "ingested").length;
 
@@ -56,7 +58,7 @@ export function EnrichPanel({
             Build the site model from a process flow diagram or electrical one-line first. The other sources unlock once it is done.
           </p>
         )}
-        {CARDS.map((c) => {
+        {CARDS.filter((c) => showLater || !c.laterPhase).map((c) => {
           const list = model.sources.filter((s) => s.kind === c.kind);
           const ingested = list.length > 0;
           const connected = list.some((s) => s.status === "applied");
@@ -106,6 +108,10 @@ export function EnrichPanel({
           );
         })}
       </div>
+      <label className="flex items-center gap-2 border-t border-border px-4 py-2 text-xs text-muted">
+        <input type="checkbox" checked={showLater} onChange={(e) => setShowLater(e.target.checked)} className="accent-[var(--accent)]" />
+        Show later-phase sources
+      </label>
       <div className="space-y-2 border-t border-border p-4">
         {enriching && (
           <div className="flex items-center gap-2 text-xs text-muted" role="status">
@@ -167,7 +173,7 @@ function Chip({ on, children }: { on: boolean; children: React.ReactNode }) {
   );
 }
 
-const KIND_TITLES: Record<SourceKind, string> = {
+const KIND_TITLES: Record<UploadKind, string> = {
   pfd: "Process Flow Diagrams",
   om: "O & M Manuals",
   assetdb: "Asset Database",
@@ -181,10 +187,10 @@ function DetailsDialog({
   onUploadMore,
   canUpload,
 }: {
-  kind: SourceKind | null;
+  kind: UploadKind | null;
   sources: SourceDTO[];
   onClose: () => void;
-  onUploadMore: (k: SourceKind) => void;
+  onUploadMore: (k: UploadKind) => void;
   canUpload: boolean;
 }) {
   return (

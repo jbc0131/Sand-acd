@@ -5,12 +5,12 @@ import crypto from "node:crypto";
 import Papa from "papaparse";
 import { raw, nowIso, UPLOAD_DIR } from "./db";
 import { UserFacingError } from "./ai";
-import { normalizeTag, SOURCE_ACCEPT, type SourceKind } from "./types";
+import { normalizeTag, SOURCE_ACCEPT, type SourceKind, type UploadKind } from "./types";
 
 export const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 50);
 
 /** Validates type and size, then writes the upload to ./data/uploads/{siteId}/. */
-export async function saveUpload(siteId: number, kind: SourceKind, file: File): Promise<{ filePath: string; fileName: string }> {
+export async function saveUpload(siteId: number, kind: UploadKind, file: File): Promise<{ filePath: string; fileName: string }> {
   const fileName = path.basename(file.name || "upload").slice(0, 200);
   const ext = path.extname(fileName).toLowerCase();
   const accept = SOURCE_ACCEPT[kind];

@@ -35,13 +35,31 @@ export interface CanvasProps {
   search: string;
   selectedId: number | null;
   onSelect: (id: number | null) => void;
+  trace?: { nodeIds: Set<number>; edgeIds: Set<number>; nonce: number } | null;
+  deenergized?: Set<number>;
+  opened?: Set<number>;
 }
 
 function matches(a: AssetDTO, q: string) {
   return `${a.name} ${a.tag} ${a.type} ${a.description}`.toLowerCase().includes(q);
 }
 
-function CanvasInner({ assets, edges, mode, enrichingIds, highlightTags, focus, search, selectedId, onSelect }: CanvasProps) {
+const EMPTY = new Set<number>();
+
+function CanvasInner({
+  assets,
+  edges,
+  mode,
+  enrichingIds,
+  highlightTags,
+  focus,
+  search,
+  selectedId,
+  onSelect,
+  trace,
+  deenergized = EMPTY,
+  opened = EMPTY,
+}: CanvasProps) {
   const rf = useReactFlow();
   const hl = React.useMemo(() => new Set(highlightTags.map(normalizeTag)), [highlightTags]);
   const q = search.trim().toLowerCase();
@@ -65,9 +83,12 @@ function CanvasInner({ assets, edges, mode, enrichingIds, highlightTags, focus, 
           status: (enrichingIds.has(a.id) ? "enriching" : a.enrichmentStatus) as EnrichmentStatus | "enriching",
           highlighted: Boolean(a.tag) && hl.has(normalizeTag(a.tag)),
           dimmed: q.length > 0 && !matches(a, q),
+          traced: Boolean(trace?.nodeIds.has(a.id)),
+          deenergized: deenergized.has(a.id),
+          opened: opened.has(a.id),
         },
       })),
-    [assets, mode, enrichingIds, hl, q, selectedId, enrichPos],
+    [assets, mode, enrichingIds, hl, q, selectedId, enrichPos, trace, deenergized, opened],
   );
 
   // Keep user-dragged positions while data (status, chips, highlight) changes; reset them when the layout changes.
@@ -98,22 +119,38 @@ function CanvasInner({ assets, edges, mode, enrichingIds, highlightTags, focus, 
     if (ids.length) rf.fitView({ nodes: ids, duration: 500, padding: 0.6, maxZoom: 1.1 });
   }, [focus, assets, rf]);
 
+  // Pan to a new trace.
+  React.useEffect(() => {
+    if (!trace || trace.nodeIds.size === 0) return;
+    rf.fitView({ nodes: [...trace.nodeIds].map((id) => ({ id: String(id) })), duration: 500, padding: 0.25 });
+  }, [trace, rf]);
+
   const flowEdges = React.useMemo<Edge[]>(
     () =>
-      edges.map((e) => ({
-        id: String(e.id),
-        source: String(e.from),
-        target: String(e.to),
-        type: "smoothstep",
-        animated: true,
-        label: e.label || undefined,
-        labelBgPadding: [6, 3] as [number, number],
-        labelBgBorderRadius: 4,
-        labelBgStyle: { fill: "#ffffff", stroke: "#dbe2ea" },
-        style: { stroke: "var(--accent)", strokeWidth: 1.6 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#14a85a", width: 16, height: 16 },
-      })),
-    [edges],
+      edges.map((e) => {
+        const traced = Boolean(trace?.edgeIds.has(e.id));
+        const dead = deenergized.has(e.to) && !traced;
+        const color = traced ? "#2a5bb8" : dead ? "#c93b3b" : e.kind === "control" ? "#7c5cd6" : "#14a85a";
+        return {
+          id: String(e.id),
+          source: String(e.from),
+          target: String(e.to),
+          type: "smoothstep",
+          animated: e.kind !== "control" && !dead,
+          label: e.label || undefined,
+          labelBgPadding: [6, 3] as [number, number],
+          labelBgBorderRadius: 4,
+          labelBgStyle: { fill: "#ffffff", stroke: "#dbe2ea" },
+          style: {
+            stroke: traced || dead || e.kind === "control" ? color : "var(--accent)",
+            strokeWidth: traced ? 3 : 1.6,
+            ...(e.kind === "control" ? { strokeDasharray: "2 4" } : {}),
+          },
+          markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+          className: traced ? "cda-traced-edge" : undefined,
+        };
+      }),
+    [edges, trace, deenergized],
   );
 
   return (

@@ -2,31 +2,51 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ChevronRight, LoaderCircle, MapPin, PanelLeftOpen, Pencil, Upload } from "lucide-react";
+import { ChevronRight, LoaderCircle, MapPin, PanelLeftOpen, Pencil, Power, RotateCcw, Upload, Waypoints, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { StatusPill } from "@/components/status-pill";
 import { useGlobalSearch } from "@/components/app-shell";
 import { api, jsonInit, pollJob } from "@/lib/client";
-import type { AssetDTO, JobDTO, SiteModel, SourceKind } from "@/lib/types";
+import { DECISION_SUPPORT, trace as runTrace, whatIfOpen, type ElecAsset, type ElecEdge } from "@/lib/electrical";
+import { typeLabel, type AssetDTO, type JobDTO, type SiteModel, type UploadKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Canvas } from "./canvas";
 import { StatusLegend } from "./legend";
 import { AssetDrawer } from "./asset-drawer";
 import { UploadDialog } from "./upload-dialog";
+import { DrawingUploadDialog } from "./drawing-upload-dialog";
 import { EnrichPanel } from "./enrich-panel";
 import { Copilot, type CopilotHandle } from "./copilot";
 import { Documentation } from "./documentation";
 import { DesignPlaceholder } from "./design-placeholder";
+import { DrawingsRegister } from "./drawings-register";
+import { DrawingViewer, type ViewerTarget } from "./drawing-viewer";
+import { ReviewTab } from "./review-tab";
+import { BaselineTab } from "./baseline-tab";
 
-type Tab = "overview" | "enrich" | "design" | "documentation";
+type Tab = "overview" | "drawings" | "enrich" | "review" | "baseline" | "documentation" | "acd";
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "drawings", label: "Drawings" },
   { id: "enrich", label: "Enrich" },
-  { id: "design", label: "Design" },
+  { id: "review", label: "Review" },
+  { id: "baseline", label: "Baseline" },
   { id: "documentation", label: "Documentation" },
+  { id: "acd", label: "Accelerating Capital Delivery" },
 ];
+
+interface TraceState {
+  assetId: number;
+  tag: string;
+  direction: "upstream" | "downstream";
+  nodeIds: Set<number>;
+  edgeIds: Set<number>;
+  paths: number;
+  truncated: boolean;
+  nonce: number;
+}
 
 export function SiteWorkspace({ siteId }: { siteId: number }) {
   const { query } = useGlobalSearch();
@@ -34,19 +54,25 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<Tab>("overview");
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
-  const [uploadKind, setUploadKind] = React.useState<SourceKind | null>(null);
+  const [uploadKind, setUploadKind] = React.useState<UploadKind | null>(null);
   const [highlightTags, setHighlightTags] = React.useState<string[]>([]);
   const [focus, setFocus] = React.useState<{ tags: string[]; nonce: number } | null>(null);
   const [enrichingIds, setEnrichingIds] = React.useState<Set<number>>(new Set());
   const [enriching, setEnriching] = React.useState(false);
   const [enrichStep, setEnrichStep] = React.useState("");
   const [panelOpen, setPanelOpen] = React.useState(false);
+  const [viewer, setViewer] = React.useState<ViewerTarget | null>(null);
+  const [traceState, setTraceState] = React.useState<TraceState | null>(null);
+  const [whatIf, setWhatIf] = React.useState<Set<number>>(new Set());
+  const [showDead, setShowDead] = React.useState(false);
+  const [dataVersion, setDataVersion] = React.useState(0);
   const copilotRef = React.useRef<CopilotHandle>(null);
 
   const reload = React.useCallback(async () => {
     try {
       const m = await api<SiteModel>(`/api/sites/${siteId}`);
       setModel(m);
+      setDataVersion((v) => v + 1);
       return m;
     } catch (e) {
       setLoadError((e as Error).message);
@@ -71,6 +97,25 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
     setTab((t) => (t === "overview" || t === "enrich" ? t : "overview"));
   }, []);
 
+  const openDrawing = React.useCallback((drawingId: number, assetId?: number | null) => setViewer({ drawingId, assetId: assetId ?? null }), []);
+
+  const elec = React.useMemo(() => {
+    if (!model) return null;
+    const assets: ElecAsset[] = model.assets.map((a) => ({ id: a.id, tag: a.tag, name: a.name, type: a.type, params: a.params }));
+    const edges: ElecEdge[] = model.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, kind: e.kind }));
+    return { assets, edges };
+  }, [model]);
+
+  const whatIfResult = React.useMemo(
+    () => (elec && whatIf.size ? whatIfOpen(elec.assets, elec.edges, [...whatIf]) : null),
+    [elec, whatIf],
+  );
+  const deenergized = React.useMemo(() => new Set(whatIfResult?.deenergized.map((d) => d.id) ?? []), [whatIfResult]);
+  const traceProp = React.useMemo(
+    () => (traceState ? { nodeIds: traceState.nodeIds, edgeIds: traceState.edgeIds, nonce: traceState.nonce } : null),
+    [traceState],
+  );
+
   if (loadError) {
     return (
       <div className="p-6">
@@ -81,7 +126,7 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
       </div>
     );
   }
-  if (!model) {
+  if (!model || !elec) {
     return (
       <div className="flex flex-1 items-center justify-center text-muted">
         <LoaderCircle className="size-6 animate-spin" />
@@ -91,6 +136,34 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
 
   const hasModel = model.assets.length > 0;
   const selected = model.assets.find((a) => a.id === selectedId) ?? null;
+  const tagOf = (id: number) => model.assets.find((a) => a.id === id)?.tag ?? `#${id}`;
+
+  const startTrace = (assetId: number, direction: "upstream" | "downstream") => {
+    const t = runTrace(elec.assets, elec.edges, assetId, direction, 15);
+    setTraceState({
+      assetId,
+      tag: tagOf(assetId),
+      direction,
+      nodeIds: new Set(t.nodeIds),
+      edgeIds: new Set(t.edgeIds),
+      paths: t.paths.length,
+      truncated: t.truncated,
+      nonce: Date.now(),
+    });
+    if (tab !== "overview" && tab !== "enrich") setTab("overview");
+    setSelectedId(null);
+  };
+
+  const toggleWhatIf = (assetId: number) => {
+    setWhatIf((prev) => {
+      const next = new Set(prev);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+    if (tab !== "overview" && tab !== "enrich") setTab("overview");
+    setShowDead(true);
+  };
 
   const runEnrichment = async () => {
     setEnriching(true);
@@ -123,16 +196,18 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
     }
   };
 
-  const unlink = async (kind: SourceKind) => {
+  const unlink = async (kind: UploadKind) => {
     const list = model.sources.filter((s) => s.kind === kind);
     try {
       for (const s of kind === "pfd" ? list.slice(0, 1) : list) {
         await api(`/api/sites/${siteId}/sources/${s.id}`, { method: "DELETE" });
       }
-      toast.success(kind === "pfd" ? "Diagram unlinked. The site model was cleared." : "Source unlinked and its parameters removed.");
+      toast.success(kind === "pfd" ? "Diagrams unlinked. The site model and drawing register were cleared." : "Source unlinked and its parameters removed.");
       if (kind === "pfd") {
         setSelectedId(null);
         setHighlightTags([]);
+        setTraceState(null);
+        setWhatIf(new Set());
       }
       await reload();
     } catch (e) {
@@ -147,7 +222,7 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
     setTimeout(
       () =>
         copilotRef.current?.ask(
-          `Tell me about ${a.tag || a.name}${a.tag ? ` (${a.name})` : ""}: its key ratings, what it is connected to, and any procedures that involve it.`,
+          `Tell me about ${a.tag || a.name}${a.tag ? ` (${a.name})` : ""}: its key ratings, what it is connected to, which drawings it appears on, and any procedures that involve it.`,
         ),
       50,
     );
@@ -167,16 +242,82 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
       onRun={runEnrichment}
       onContinue={() => {
         setPanelOpen(false);
-        setTab("design");
+        setTab("acd");
       }}
     />
+  );
+
+  const lineupBar = (whatIfResult || traceState) && (
+    <div className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-col gap-2 sm:max-w-[min(560px,calc(100%-14rem))]">
+      {whatIfResult && (
+        <div className="rounded-xl border border-danger/40 bg-panel p-2.5 text-xs shadow-float" data-testid="lineup-bar">
+          <div className="flex flex-wrap items-center gap-2">
+            <Power className="size-4 text-danger" />
+            <span className="font-semibold">What-if lineup active</span>
+            <span className="text-muted">Opened:</span>
+            {whatIfResult.opened.map((o) => (
+              <span key={o.id} className="rounded bg-[#7c5cd6]/15 px-1.5 font-mono text-[#7c5cd6]">
+                {o.tag}
+              </span>
+            ))}
+            <span className="ml-auto rounded-full bg-muted-bg px-2 py-0.5 text-[10px] text-muted">{DECISION_SUPPORT}</span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <button type="button" className="text-danger underline underline-offset-2" onClick={() => setShowDead((v) => !v)} data-testid="deenergized-count">
+              {whatIfResult.deenergized.length} de-energized ({whatIfResult.newlyDeenergized} newly)
+            </button>
+            <Button size="sm" variant="outline" className="ml-auto" onClick={() => setWhatIf(new Set())} data-testid="reset-lineup">
+              <RotateCcw /> Reset to normal lineup
+            </Button>
+          </div>
+          {showDead && (
+            <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-border">
+              <div className="flex flex-wrap gap-1.5 border-b border-border bg-page px-2 py-1 text-[10px] text-muted">
+                {Object.entries(whatIfResult.byType).map(([t, n]) => (
+                  <span key={t}>
+                    {typeLabel(t as AssetDTO["type"])}: {n}
+                  </span>
+                ))}
+              </div>
+              <ul className="divide-y divide-border" data-testid="deenergized-list">
+                {whatIfResult.deenergized.map((d) => (
+                  <li key={d.id}>
+                    <button type="button" onClick={() => setSelectedId(d.id)} className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-muted-bg">
+                      <span className="font-mono">{d.tag}</span>
+                      <span className="truncate text-muted">{d.name}</span>
+                      {!d.normallyEnergized && <span className="ml-auto text-[10px] text-muted">already off in normal lineup</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+      {traceState && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-chip-fg/40 bg-panel p-2.5 text-xs shadow-float" data-testid="trace-bar">
+          <Waypoints className="size-4 text-chip-fg" />
+          <span className="font-semibold">
+            Trace {traceState.direction} from {traceState.tag}
+          </span>
+          <span className="text-muted">
+            {traceState.nodeIds.size - 1} assets · {traceState.paths} path{traceState.paths === 1 ? "" : "s"}
+            {traceState.truncated ? " (depth limit reached)" : ""}
+          </span>
+          <span className="rounded-full bg-muted-bg px-2 py-0.5 text-[10px] text-muted">{DECISION_SUPPORT}</span>
+          <button type="button" className="ml-auto rounded p-0.5 text-muted hover:text-text" onClick={() => setTraceState(null)} aria-label="Clear trace">
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Title row */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-panel px-3 py-2.5 sm:px-5">
-        <div className="w-full min-w-0 md:w-auto md:flex-1">
+        <div className="w-full min-w-0 lg:w-auto lg:flex-1">
           <nav className="flex items-center gap-1 text-xs text-muted" aria-label="Breadcrumb">
             <Link href="/" className="hover:text-text">
               Available Sites
@@ -218,7 +359,7 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
               aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
               className={cn(
-                "rounded-full px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors sm:px-3.5 sm:text-sm",
+                "rounded-full px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors",
                 tab === t.id ? "bg-accent text-accent-fg" : "text-muted hover:text-text",
               )}
             >
@@ -246,8 +387,12 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
                   search={query}
                   selectedId={selectedId}
                   onSelect={setSelectedId}
+                  trace={traceProp}
+                  deenergized={deenergized}
+                  opened={whatIf}
                 />
                 <StatusLegend />
+                {lineupBar}
               </>
             ) : (
               <div className="flex h-full items-center justify-center bg-[radial-gradient(var(--canvas-dot)_1px,transparent_1px)] [background-size:18px_18px] p-4">
@@ -265,21 +410,39 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
               </div>
             )}
             {tab === "enrich" && (
-              <Button variant="outline" className="absolute top-3 left-3 z-10 shadow-card md:hidden" onClick={() => setPanelOpen(true)}>
+              <Button variant="outline" className="absolute bottom-24 left-3 z-10 shadow-card md:hidden" onClick={() => setPanelOpen(true)}>
                 <PanelLeftOpen /> Enrich Site
               </Button>
             )}
-            <Copilot ref={copilotRef} model={model} onHighlight={onHighlight} onFocusTag={onFocusTag} />
+            <Copilot ref={copilotRef} model={model} onHighlight={onHighlight} onFocusTag={onFocusTag} onOpenDrawing={openDrawing} />
           </div>
         )}
 
+        {tab === "drawings" && (
+          <DrawingsRegister drawings={model.drawings} search={query} onOpen={(d) => openDrawing(d.id)} onUpload={() => setUploadKind("pfd")} />
+        )}
+        {tab === "review" && (
+          <ReviewTab siteId={siteId} drawings={model.drawings} reviewMode={model.reviewMode} initialDrawingId={null} onChanged={() => void reload()} />
+        )}
+        {tab === "baseline" && <BaselineTab siteId={siteId} refreshKey={dataVersion} />}
         {tab === "documentation" && <Documentation model={model} search={query} onSelect={setSelectedId} />}
-        {tab === "design" && (
+        {tab === "acd" && (
           <DesignPlaceholder enriched={model.assets.filter((a) => a.enrichmentStatus === "enriched").length} total={model.assets.length} />
         )}
 
-        {selected && (
-          <AssetDrawer asset={selected} model={model} onClose={() => setSelectedId(null)} onSelect={setSelectedId} onAsk={askAbout} />
+        {selected && (canvasTab || tab === "documentation" || tab === "drawings") && (
+          <AssetDrawer
+            asset={selected}
+            model={model}
+            whatIfOpen={whatIf}
+            onClose={() => setSelectedId(null)}
+            onSelect={setSelectedId}
+            onAsk={askAbout}
+            onOpenDrawing={openDrawing}
+            onTrace={startTrace}
+            onToggleWhatIf={toggleWhatIf}
+            onChanged={reload}
+          />
         )}
       </div>
 
@@ -291,11 +454,27 @@ export function SiteWorkspace({ siteId }: { siteId: number }) {
       </Sheet>
 
       <UploadDialog
-        kind={uploadKind}
+        kind={uploadKind && uploadKind !== "pfd" ? uploadKind : null}
         siteId={siteId}
         maxUploadMb={model.maxUploadMb}
         onOpenChange={(o) => !o && setUploadKind(null)}
         onDone={() => void reload()}
+      />
+      <DrawingUploadDialog
+        open={uploadKind === "pfd"}
+        siteId={siteId}
+        maxUploadMb={model.maxUploadMb}
+        onOpenChange={(o) => !o && setUploadKind(null)}
+        onProgress={() => void reload()}
+      />
+      <DrawingViewer
+        siteId={siteId}
+        target={viewer}
+        onClose={() => setViewer(null)}
+        onSelectAsset={(id) => {
+          setViewer(null);
+          setSelectedId(id);
+        }}
       />
     </div>
   );
