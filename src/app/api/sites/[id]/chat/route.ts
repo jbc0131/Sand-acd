@@ -14,6 +14,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/sites/[id]/chat
     tools_json: string | null;
     highlight_json: string | null;
     sources_json: string | null;
+    drawings_json: string | null;
     feedback: "up" | "down" | null;
     created_at: string;
   }[];
@@ -24,6 +25,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/sites/[id]/chat
     tools: r.tools_json ? JSON.parse(r.tools_json) : [],
     highlight: r.highlight_json ? JSON.parse(r.highlight_json) : [],
     sources: r.sources_json ? JSON.parse(r.sources_json) : [],
+    drawings: r.drawings_json ? JSON.parse(r.drawings_json) : [],
     feedback: r.feedback,
     createdAt: r.created_at,
   }));

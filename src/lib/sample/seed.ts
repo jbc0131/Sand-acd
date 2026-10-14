@@ -1,8 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { raw, nowIso, UPLOAD_DIR } from "../db";
+import { raw, UPLOAD_DIR } from "../db";
 import { chunkPages, indexChunks, insertSource, stageAssetDb, stageTelemetry } from "../ingest";
-import { createSite, recomputeAssets, relayout, setParam, DESCRIPTION_KEY } from "../model";
+import { createSite, recomputeAssets, relayout } from "../model";
+import { saveDrawing, type Diagram } from "../extract";
+import { insertDrawing, setDrawingImage } from "../drawings";
+import { renderFirstPagePng } from "../render";
+import { normalizeTag } from "../types";
 import {
   ASSET_REGISTER_CSV,
   ASSET_REGISTER_FILE,
@@ -12,54 +16,100 @@ import {
   MANUAL_FILE_NAME,
   MANUAL_PAGES,
   MANUAL_TITLE,
-  SAMPLE_ASSETS,
-  SAMPLE_EDGES,
+  SAFETY_RELATED_TAGS,
+  SAMPLE_DOC_LINKS,
   SAMPLE_LOCATION,
   SAMPLE_SITE_NAME,
 } from "./data";
+import { SAMPLE_SHEETS, sheetAsset, sheetBBox, sheetImageName, type SampleSheet } from "./drawings";
 
-const DIAGRAM_FILE = "SAMPLE_Bus1A_one_line.json";
+const SAMPLE_DIR = path.resolve(/*turbopackIgnore: true*/ process.cwd(), "sample-data");
+
+/** The extraction result the model would return for one sample sheet. */
+export function sheetDiagram(sheet: SampleSheet): Diagram {
+  return {
+    drawing_type: sheet.drawingType,
+    title_block: { ...sheet.titleBlock },
+    status: sheet.status,
+    partial_reason: sheet.partialReason ?? "",
+    resolved_pct: sheet.resolvedPct,
+    nodes: sheet.nodes.map((n) => {
+      const a = sheetAsset(n.tag);
+      return {
+        id: n.tag,
+        name: n.name ?? a.name,
+        tag: n.tag,
+        type: a.type,
+        description: a.description,
+        params: { ...(n.params ?? {}) },
+        confidence: n.confidence,
+        bbox: sheetBBox(n),
+      };
+    }),
+    edges: sheet.edges.map((e) => ({ from: e.from, to: e.to, label: e.label, confidence: e.confidence })),
+    off_page_connectors: sheet.connectors.map((c) => ({
+      label: c.label,
+      direction: c.direction,
+      target_drawing_number: c.targetDrawingNumber,
+      target_tag: c.targetTag,
+      at_node_id: c.atTag,
+    })),
+  };
+}
 
 /**
- * Creates the fictional sample site: the diagram-derived model is applied,
- * while the manual, asset register and historian export are ingested but not yet applied.
- * Needs no API key.
+ * Creates the fictional sample site with no API key:
+ * - three drawings, saved through the same merge path as live uploads (applied),
+ * - the O&M manual indexed for the Copilot, with component-to-section links,
+ * - the manual extraction, asset register and historian export ingested but not yet applied.
+ * No review records are seeded.
  */
-export function seedSampleSite(): number {
+export async function seedSampleSite(): Promise<number> {
   const siteId = createSite(SAMPLE_SITE_NAME, SAMPLE_LOCATION);
   const dir = path.join(UPLOAD_DIR, String(siteId));
   fs.mkdirSync(dir, { recursive: true });
-  const write = (name: string, body: string) => {
+  const write = (name: string, body: string | Buffer) => {
     const p = path.join(dir, name);
     fs.writeFileSync(p, body);
     return p;
   };
   const db = raw();
 
-  db.transaction(() => {
-    // 1. The one-line diagram (pre-extracted, so no model call is needed).
-    const diagramPath = write(DIAGRAM_FILE, JSON.stringify({ note: "Fictional sample one-line", assets: SAMPLE_ASSETS, edges: SAMPLE_EDGES }, null, 2));
-    const pfdId = insertSource(
-      siteId,
-      "pfd",
-      DIAGRAM_FILE,
-      diagramPath,
-      "applied",
-      `Fictional Bus 1A electrical one-line (pre-extracted sample). ${SAMPLE_ASSETS.length} assets, ${SAMPLE_EDGES.length} connections.`,
-    );
-    const ins = db.prepare(`INSERT INTO assets (site_id, ext_id, name, tag, type, description, params_json) VALUES (?, ?, ?, ?, ?, ?, '{}')`);
-    const ids = new Map<string, number>();
-    SAMPLE_ASSETS.forEach((a, i) => {
-      const id = Number(ins.run(siteId, `N${i + 1}`, a.name, a.tag, a.type, a.description).lastInsertRowid);
-      ids.set(a.tag, id);
-      setParam(id, DESCRIPTION_KEY, a.description, pfdId, null);
-      for (const [k, v] of Object.entries(a.params ?? {})) setParam(id, k, v, pfdId, null);
+  // 1. Drawings, in sheet order so off-page connectors resolve as each sheet lands.
+  for (const sheet of SAMPLE_SHEETS) {
+    const pdf = fs.readFileSync(path.join(SAMPLE_DIR, sheet.fileName));
+    const pdfPath = write(sheet.fileName, pdf);
+    const sourceId = insertSource(siteId, "pfd", sheet.fileName, pdfPath, "ingested", null);
+    const drawingId = insertDrawing(siteId, sourceId, sheet.fileName, "processing");
+    const pngSrc = path.join(SAMPLE_DIR, sheetImageName(sheet));
+    const png = fs.existsSync(pngSrc) ? fs.readFileSync(pngSrc) : await renderFirstPagePng(new Uint8Array(pdf));
+    setDrawingImage(drawingId, write(sheetImageName(sheet), png));
+    const r = saveDrawing(siteId, drawingId, sourceId, sheetDiagram(sheet), {
+      ingestMs: sheet.ingestMs,
+      tokensIn: sheet.tokensIn,
+      tokensOut: sheet.tokensOut,
     });
-    const insE = db.prepare(`INSERT INTO edges (site_id, from_asset, to_asset, label) VALUES (?, ?, ?, ?)`);
-    for (const [f, t, label] of SAMPLE_EDGES) insE.run(siteId, ids.get(f)!, ids.get(t)!, label);
-    db.prepare(`UPDATE sites SET status = 'active', updated_at = ? WHERE id = ?`).run(nowIso(), siteId);
+    const t = sheet.titleBlock;
+    db.prepare(`UPDATE sources SET summary = ? WHERE id = ?`).run(
+      `${t.drawing_number} rev ${t.revision}: ${t.title} (fictional, pre-extracted). ${r.assets} components, ${r.edges} connections${
+        sheet.status === "partial" ? `; partial read (${sheet.partialReason}, ${sheet.resolvedPct}% resolved)` : ""
+      }.`,
+      sourceId,
+    );
+  }
 
-    // 2. O&M manual: indexed into the knowledge base now, applied to assets when enrichment runs.
+  const assets = db.prepare(`SELECT id, tag FROM assets WHERE site_id = ?`).all(siteId) as { id: number; tag: string }[];
+  const idOf = (tag: string) => assets.find((a) => normalizeTag(a.tag) === normalizeTag(tag))?.id;
+
+  db.transaction(() => {
+    // 2. Safety-related equipment always gets full review.
+    const safety = db.prepare(`UPDATE assets SET safety_related = 1 WHERE id = ?`);
+    for (const tag of SAFETY_RELATED_TAGS) {
+      const id = idOf(tag);
+      if (id) safety.run(id);
+    }
+
+    // 3. O&M manual: indexed now, applied to assets when enrichment runs. Section links seeded now.
     const manualPath = write(MANUAL_FILE_NAME, MANUAL_PAGES.join("\n\f\n"));
     const chunks = chunkPages(MANUAL_PAGES);
     const omId = insertSource(
@@ -72,8 +122,20 @@ export function seedSampleSite(): number {
       JSON.stringify(MANUAL_EXTRACTION),
     );
     indexChunks(siteId, omId, chunks);
+    const chunkOnPage = db.prepare(`SELECT id FROM kb_chunks WHERE source_id = ? AND page = ? ORDER BY section_no LIMIT 1`);
+    const link = db.prepare(
+      `INSERT OR IGNORE INTO asset_doc_links (asset_id, chunk_id, link_type, created_by, status) VALUES (?, ?, ?, 'model', 'unreviewed')`,
+    );
+    for (const l of SAMPLE_DOC_LINKS) {
+      const chunk = chunkOnPage.get(omId, l.page) as { id: number } | undefined;
+      if (!chunk) continue;
+      for (const tag of l.tags) {
+        const id = idOf(tag);
+        if (id) link.run(id, chunk.id, l.linkType);
+      }
+    }
 
-    // 3. Asset register CSV and historian export: staged, not applied.
+    // 4. Asset register CSV and historian export: staged, not applied.
     const regPath = write(ASSET_REGISTER_FILE, ASSET_REGISTER_CSV);
     const regId = insertSource(siteId, "assetdb", ASSET_REGISTER_FILE, regPath, "ingested", null);
     const reg = stageAssetDb(regId, ASSET_REGISTER_CSV);

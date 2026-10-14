@@ -12,6 +12,9 @@ export type AssetNodeData = {
   status: EnrichmentStatus | "enriching";
   highlighted: boolean;
   dimmed: boolean;
+  traced: boolean;
+  deenergized: boolean;
+  opened: boolean;
 };
 
 export type AssetFlowNode = Node<AssetNodeData, "asset">;
@@ -29,7 +32,7 @@ export function StatusDot({ status, className }: { status: EnrichmentStatus | "e
 }
 
 function AssetNodeImpl({ data, selected }: NodeProps<AssetFlowNode>) {
-  const { asset, mode, status, highlighted, dimmed } = data;
+  const { asset, mode, status, highlighted, dimmed, traced, deenergized, opened } = data;
   const freshKeys = new Set(asset.provenance.filter((p) => p.fresh).map((p) => p.key));
   const paramEntries = Object.entries(asset.params).filter(([k]) => k !== "tag");
   // Fresh chips first so the latest run is visible.
@@ -47,12 +50,26 @@ function AssetNodeImpl({ data, selected }: NodeProps<AssetFlowNode>) {
         "relative w-[250px] rounded-xl border bg-card p-3 shadow-card transition-[opacity,border-color]",
         selected ? "border-accent" : "border-border",
         highlighted && "cda-highlight",
+        traced && "cda-traced",
+        deenergized && "cda-deenergized",
         dimmed && "cda-dimmed",
       )}
       data-testid="asset-node"
       data-tag={asset.tag}
       data-status={status}
+      data-traced={traced ? "true" : undefined}
+      data-deenergized={deenergized ? "true" : undefined}
     >
+      {(deenergized || opened) && (
+        <span
+          className={cn(
+            "absolute -top-2.5 left-3 rounded-full px-1.5 text-[10px] font-semibold text-white",
+            opened ? "bg-[#7c5cd6]" : "bg-danger",
+          )}
+        >
+          {opened ? "OPEN (what-if)" : "De-energized"}
+        </span>
+      )}
       <Handle type="target" position={Position.Left} className="cda-handle" />
       <StatusDot status={status} className="absolute top-3 right-3" />
       <div className="flex items-start gap-2.5 pr-4">

@@ -4,8 +4,14 @@ import path from "node:path";
 import { raw, nowIso, UPLOAD_DIR } from "./db";
 import { hasApiKey } from "./ai";
 import { layoutLR } from "./layout";
+import { listDrawings } from "./drawings";
 import {
   ENRICHMENT_KINDS,
+  type AppearanceDTO,
+  type BBox,
+  type DiscrepancyDTO,
+  type DocLinkDTO,
+  type ReviewMode,
   type AssetDTO,
   type AssetType,
   type EdgeDTO,
@@ -15,6 +21,7 @@ import {
   type SiteSummary,
   type SourceDTO,
   type SourceKind,
+  type UploadKind,
 } from "./types";
 
 // Provenance keys that are not shown as parameters.
@@ -81,10 +88,10 @@ export function touchSite(siteId: number) {
 
 export function listSources(siteId: number): SourceDTO[] {
   const rows = raw()
-    .prepare(`SELECT * FROM sources WHERE site_id = ? ORDER BY created_at, id`)
+    .prepare(`SELECT * FROM sources WHERE site_id = ? AND kind != 'sme' ORDER BY created_at, id`)
     .all(siteId) as {
     id: number;
-    kind: SourceKind;
+    kind: UploadKind;
     file_name: string;
     status: SourceDTO["status"];
     summary: string | null;
@@ -117,6 +124,7 @@ export function getSiteModel(siteId: number): SiteModel | null {
     enrichment_status: EnrichmentStatus;
     x: number;
     y: number;
+    safety_related: number;
   }[];
   const prov = db
     .prepare(
@@ -148,6 +156,9 @@ export function getSiteModel(siteId: number): SiteModel | null {
     });
     provByAsset.set(p.asset_id, list);
   }
+  const apps = appearancesFor(siteId);
+  const discs = discrepanciesFor(siteId);
+  const links = docLinksFor(siteId);
   const assets: AssetDTO[] = assetRows.map((a) => ({
     id: a.id,
     extId: a.ext_id,
@@ -160,16 +171,150 @@ export function getSiteModel(siteId: number): SiteModel | null {
     enrichmentStatus: a.enrichment_status,
     x: a.x,
     y: a.y,
+    safetyRelated: Boolean(a.safety_related),
+    appearances: apps.get(a.id) ?? [],
+    discrepancies: discs.get(a.id) ?? [],
+    docLinks: links.get(a.id) ?? [],
   }));
   const edges: EdgeDTO[] = (
-    db.prepare(`SELECT id, from_asset, to_asset, label FROM edges WHERE site_id = ? ORDER BY id`).all(siteId) as {
+    db
+      .prepare(`SELECT id, from_asset, to_asset, label, kind, drawing_id, confidence, via FROM edges WHERE site_id = ? ORDER BY id`)
+      .all(siteId) as {
       id: number;
       from_asset: number;
       to_asset: number;
       label: string;
+      kind: "power" | "control";
+      drawing_id: number | null;
+      confidence: number | null;
+      via: string;
     }[]
-  ).map((e) => ({ id: e.id, from: e.from_asset, to: e.to_asset, label: e.label }));
-  return { site, assets, edges, sources: listSources(siteId), hasApiKey: hasApiKey(), maxUploadMb: Number(process.env.MAX_UPLOAD_MB || 50) };
+  ).map((e) => ({
+    id: e.id,
+    from: e.from_asset,
+    to: e.to_asset,
+    label: e.label,
+    kind: e.kind,
+    drawingId: e.drawing_id,
+    confidence: e.confidence,
+    via: e.via,
+  }));
+  const reviewMode = (db.prepare(`SELECT review_mode FROM sites WHERE id = ?`).get(siteId) as { review_mode: ReviewMode }).review_mode;
+  return {
+    site,
+    assets,
+    edges,
+    sources: listSources(siteId),
+    hasApiKey: hasApiKey(),
+    maxUploadMb: Number(process.env.MAX_UPLOAD_MB || 50),
+    drawings: listDrawings(siteId),
+    reviewMode,
+  };
+}
+
+function appearancesFor(siteId: number): Map<number, AppearanceDTO[]> {
+  const rows = raw()
+    .prepare(
+      `SELECT ap.id, ap.asset_id, ap.drawing_id, ap.bbox, ap.confidence, d.drawing_number, d.revision
+       FROM asset_appearances ap JOIN drawings d ON d.id = ap.drawing_id
+       WHERE d.site_id = ? ORDER BY d.drawing_number, ap.id`,
+    )
+    .all(siteId) as {
+    id: number;
+    asset_id: number;
+    drawing_id: number;
+    bbox: string | null;
+    confidence: number | null;
+    drawing_number: string | null;
+    revision: string | null;
+  }[];
+  const out = new Map<number, AppearanceDTO[]>();
+  for (const r of rows) {
+    const list = out.get(r.asset_id) ?? [];
+    list.push({
+      id: r.id,
+      drawingId: r.drawing_id,
+      drawingNumber: r.drawing_number,
+      revision: r.revision,
+      bbox: r.bbox ? (JSON.parse(r.bbox) as BBox) : null,
+      confidence: r.confidence,
+    });
+    out.set(r.asset_id, list);
+  }
+  return out;
+}
+
+function discrepanciesFor(siteId: number): Map<number, DiscrepancyDTO[]> {
+  const db = raw();
+  const numbers = new Map(
+    (db.prepare(`SELECT id, drawing_number FROM drawings WHERE site_id = ?`).all(siteId) as { id: number; drawing_number: string | null }[]).map(
+      (d) => [d.id, d.drawing_number ?? `#${d.id}`],
+    ),
+  );
+  const rows = db
+    .prepare(`SELECT id, asset_id, key, values_json, status, resolution FROM discrepancies WHERE site_id = ? ORDER BY id`)
+    .all(siteId) as { id: number; asset_id: number; key: string; values_json: string; status: "open" | "resolved"; resolution: string | null }[];
+  const out = new Map<number, DiscrepancyDTO[]>();
+  for (const r of rows) {
+    const values = (JSON.parse(r.values_json) as { value: string; drawingIds: number[] }[]).map((v) => ({
+      ...v,
+      drawingNumbers: v.drawingIds.map((id) => numbers.get(id) ?? `#${id}`),
+    }));
+    const list = out.get(r.asset_id) ?? [];
+    list.push({ id: r.id, key: r.key, values, status: r.status, resolution: r.resolution });
+    out.set(r.asset_id, list);
+  }
+  return out;
+}
+
+function docLinksFor(siteId: number): Map<number, DocLinkDTO[]> {
+  const rows = raw()
+    .prepare(
+      `SELECT l.id, l.asset_id, l.chunk_id, l.link_type, l.created_by, l.status, c.section_no, c.page, s.file_name
+       FROM asset_doc_links l JOIN kb_chunks c ON c.id = l.chunk_id JOIN sources s ON s.id = c.source_id
+       WHERE c.site_id = ? ORDER BY c.section_no`,
+    )
+    .all(siteId) as {
+    id: number;
+    asset_id: number;
+    chunk_id: number;
+    link_type: DocLinkDTO["linkType"];
+    created_by: DocLinkDTO["createdBy"];
+    status: DocLinkDTO["status"];
+    section_no: number;
+    page: number;
+    file_name: string;
+  }[];
+  const out = new Map<number, DocLinkDTO[]>();
+  for (const r of rows) {
+    const list = out.get(r.asset_id) ?? [];
+    list.push({
+      id: r.id,
+      chunkId: r.chunk_id,
+      sectionNo: r.section_no,
+      page: r.page,
+      file: r.file_name,
+      linkType: r.link_type,
+      createdBy: r.created_by,
+      status: r.status,
+    });
+    out.set(r.asset_id, list);
+  }
+  return out;
+}
+
+/** The per-site source that holds SME corrections from review. Created on first use. */
+export function smeSourceId(siteId: number): number {
+  const db = raw();
+  const row = db.prepare(`SELECT id FROM sources WHERE site_id = ? AND kind = 'sme'`).get(siteId) as { id: number } | undefined;
+  if (row) return row.id;
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO sources (site_id, kind, file_name, file_path, status, summary, created_at) VALUES (?, 'sme', 'SME review', '', 'applied', 'Corrections made during SME review', ?)`,
+      )
+      .run(siteId, nowIso()).lastInsertRowid,
+  );
 }
 
 /**
@@ -181,7 +326,7 @@ export function recomputeAssets(siteId: number) {
   const assets = db.prepare(`SELECT id FROM assets WHERE site_id = ?`).all(siteId) as { id: number }[];
   const provStmt = db.prepare(
     `SELECT aps.key, aps.value, s.kind FROM asset_param_sources aps JOIN sources s ON s.id = aps.source_id
-     WHERE aps.asset_id = ? ORDER BY s.created_at, s.id`,
+     WHERE aps.asset_id = ? ORDER BY (s.kind = 'sme'), s.created_at, s.id`,
   );
   const upd = db.prepare(`UPDATE assets SET params_json = ?, description = ?, enrichment_status = ? WHERE id = ?`);
   const origDesc = db.prepare(`SELECT description FROM assets WHERE id = ?`);
@@ -252,8 +397,14 @@ export function unlinkSource(siteId: number, sourceId: number): { wipedModel: bo
   ) as { file_path: string }[];
   db.transaction(() => {
     if (src.kind === "pfd") {
+      const images = db.prepare(`SELECT page_image_path FROM drawings WHERE site_id = ? AND page_image_path IS NOT NULL`).all(siteId) as {
+        page_image_path: string;
+      }[];
+      images.forEach((i) => files.push({ file_path: i.page_image_path }));
       db.prepare(`DELETE FROM edges WHERE site_id = ?`).run(siteId);
       db.prepare(`DELETE FROM assets WHERE site_id = ?`).run(siteId);
+      db.prepare(`DELETE FROM drawings WHERE site_id = ?`).run(siteId);
+      db.prepare(`DELETE FROM sources WHERE site_id = ? AND kind = 'sme'`).run(siteId);
       // Every other diagram is part of the same model, so remove them too.
       db.prepare(`DELETE FROM sources WHERE site_id = ? AND kind = 'pfd'`).run(siteId);
       // Enrichment sources stay ingested so they can be re-applied to a new model.

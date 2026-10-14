@@ -3,8 +3,8 @@ import { AppShell } from "@/components/app-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Capital Delivery Accelerator",
-  description: "Turn engineering diagrams into a connected, enriched asset model. Prototype with fictional sample data.",
+  title: { default: "SiteAId · Drawing Intelligence", template: "%s · SiteAId" },
+  description: "SiteAId turns engineering drawings into a reviewed, connected asset model. Prototype with fictional sample data.",
 };
 
 export const viewport: Viewport = {

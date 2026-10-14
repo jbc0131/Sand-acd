@@ -88,6 +88,13 @@ export interface JsonCallOptions<T> {
   schema: z.ZodType<T>;
   maxTokens?: number;
   effort?: "low" | "medium" | "high";
+  /** accumulates input/output tokens across attempts */
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
 }
 
 /**
@@ -106,6 +113,10 @@ export async function callJson<T>(opts: JsonCallOptions<T>): Promise<T> {
       messages,
     });
     const msg = await stream.finalMessage();
+    if (opts.usage) {
+      opts.usage.input += (msg.usage.input_tokens ?? 0) + (msg.usage.cache_read_input_tokens ?? 0) + (msg.usage.cache_creation_input_tokens ?? 0);
+      opts.usage.output += msg.usage.output_tokens ?? 0;
+    }
     if (msg.stop_reason === "refusal") {
       throw new UserFacingError("The model declined to process this file.");
     }

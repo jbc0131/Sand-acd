@@ -44,11 +44,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <SearchContext.Provider value={{ query, setQuery }}>
       <div className="flex h-dvh flex-col">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-panel px-3 sm:px-5">
-          <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Capital Delivery Accelerator home">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-sm font-bold text-accent-fg">CD</span>
+          <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="SiteAId home">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-sm font-bold text-accent-fg">SA</span>
             <span className="hidden min-w-0 flex-col leading-tight sm:flex">
-              <span className="truncate text-sm font-semibold">Capital Delivery Accelerator</span>
-              <span className="text-[11px] text-muted">Prototype</span>
+              <span className="truncate text-sm font-semibold">SiteAId</span>
+              <span className="text-[11px] text-muted">Drawing Intelligence</span>
             </span>
           </Link>
           <div className="ml-auto flex items-center gap-2">

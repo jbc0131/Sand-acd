@@ -21,8 +21,9 @@ export const Copilot = React.forwardRef<
     model: SiteModel;
     onHighlight: (tags: string[]) => void;
     onFocusTag: (tag: string) => void;
+    onOpenDrawing: (drawingId: number, assetId: number) => void;
   }
->(function Copilot({ model, onHighlight, onFocusTag }, ref) {
+>(function Copilot({ model, onHighlight, onFocusTag, onOpenDrawing }, ref) {
   const siteId = model.site.id;
   const [open, setOpen] = React.useState(true);
   const [messages, setMessages] = React.useState<LiveMessage[]>([]);
@@ -55,9 +56,9 @@ export const Copilot = React.forwardRef<
       setInput("");
       setBusy(true);
       const now = new Date().toISOString();
-      const userMsg: LiveMessage = { id: -Date.now(), role: "user", content: q, tools: [], highlight: [], sources: [], feedback: null, createdAt: now };
+      const userMsg: LiveMessage = { id: -Date.now(), role: "user", content: q, tools: [], highlight: [], sources: [], drawings: [], feedback: null, createdAt: now };
       const botId = -Date.now() - 1;
-      const bot: LiveMessage = { id: botId, role: "assistant", content: "", tools: [], highlight: [], sources: [], feedback: null, createdAt: now, streaming: true };
+      const bot: LiveMessage = { id: botId, role: "assistant", content: "", tools: [], highlight: [], sources: [], drawings: [], feedback: null, createdAt: now, streaming: true };
       setMessages((m) => [...m, userMsg, bot]);
       const patch = (fn: (m: LiveMessage) => LiveMessage) => setMessages((all) => all.map((m) => (m.id === botId ? fn(m) : m)));
 
@@ -90,7 +91,7 @@ export const Copilot = React.forwardRef<
             } else if (ev.type === "error") patch((m) => ({ ...m, error: ev.message }));
             else if (ev.type === "done") {
               finalId = ev.id;
-              patch((m) => ({ ...m, id: ev.id, content: ev.content, sources: ev.sources, highlight: ev.highlight, streaming: false }));
+              patch((m) => ({ ...m, id: ev.id, content: ev.content, sources: ev.sources, drawings: ev.drawings ?? [], highlight: ev.highlight, streaming: false }));
             }
           }
         }
@@ -120,7 +121,7 @@ export const Copilot = React.forwardRef<
         open ? "max-h-[min(560px,calc(100%-1.5rem))] w-[calc(100%-1.5rem)] sm:w-[390px]" : "w-[230px] sm:w-[390px]",
       )}
       data-testid="copilot"
-      aria-label="ACD Copilot"
+      aria-label="SiteAId Copilot"
     >
       <button
         type="button"
@@ -132,7 +133,7 @@ export const Copilot = React.forwardRef<
           <Bot className="size-4" />
         </span>
         <span className="flex-1 leading-tight">
-          <span className="block text-sm font-semibold">ACD Copilot</span>
+          <span className="block text-sm font-semibold">SiteAId Copilot</span>
           <span className="block text-xs text-muted">Get help from Copilot</span>
         </span>
         {open ? <ChevronDown className="size-4 text-muted" /> : <ChevronUp className="size-4 text-muted" />}
@@ -173,6 +174,7 @@ export const Copilot = React.forwardRef<
                   m={m}
                   onFocusTag={onFocusTag}
                   onRemoveHighlight={() => onHighlight([])}
+                  onOpenDrawing={onOpenDrawing}
                   onReapplyHighlight={() => onHighlight(m.highlight)}
                   onFeedback={feedback}
                 />
@@ -261,12 +263,14 @@ function AssistantMessage({
   m,
   onFocusTag,
   onRemoveHighlight,
+  onOpenDrawing,
   onReapplyHighlight,
   onFeedback,
 }: {
   m: LiveMessage;
   onFocusTag: (tag: string) => void;
   onRemoveHighlight: () => void;
+  onOpenDrawing: (drawingId: number, assetId: number) => void;
   onReapplyHighlight: () => void;
   onFeedback: (id: number, v: "up" | "down") => void;
 }) {
@@ -279,7 +283,7 @@ function AssistantMessage({
         <Bot className="size-3.5" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="mb-0.5 text-[11px] text-muted">ACD Copilot · {time(m.createdAt)}</div>
+        <div className="mb-0.5 text-[11px] text-muted">SiteAId Copilot · {time(m.createdAt)}</div>
         {m.tools.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1">
             {m.tools.map((t, i) => (
@@ -313,10 +317,23 @@ function AssistantMessage({
             {hlRemoved ? "Show highlight" : "Remove highlight"}
           </button>
         )}
-        {m.sources.length > 0 && (
+        {(m.sources.length > 0 || m.drawings.length > 0) && (
           <div className="mt-1.5">
             <div className="flex flex-wrap items-center gap-1">
               <span className="text-[11px] text-muted">Sources</span>
+              {m.drawings.map((d) => (
+                <button
+                  key={`${d.drawingId}:${d.assetId}`}
+                  type="button"
+                  onClick={() => onOpenDrawing(d.drawingId, d.assetId)}
+                  className="rounded border border-chip-fg/30 bg-chip-bg px-1.5 py-0.5 font-mono text-[10.5px] text-chip-fg hover:border-chip-fg"
+                  title={`Open ${d.drawingNumber}${d.revision ? ` rev ${d.revision}` : ""} at ${d.tag}`}
+                  data-testid="drawing-source-chip"
+                >
+                  DWG {d.drawingNumber}
+                  {m.drawings.filter((x) => x.drawingId === d.drawingId).length > 1 ? ` · ${d.tag}` : ""}
+                </button>
+              ))}
               {m.sources.map((s) => (
                 <button
                   key={s.n}

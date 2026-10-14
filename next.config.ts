@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Native / Node-only packages stay external to the server bundle.
-  serverExternalPackages: ["better-sqlite3", "pdfjs-dist"],
+  serverExternalPackages: ["better-sqlite3", "pdfjs-dist", "@napi-rs/canvas"],
   devIndicators: false,
   turbopack: {
     rules: {
